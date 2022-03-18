@@ -34,7 +34,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 var (
@@ -91,9 +90,8 @@ func (b *testBackend) close() {
 	b.chain.Stop()
 }
 
-func (b *testBackend) Chain() *core.BlockChain     { return b.chain }
-func (b *testBackend) StateBloom() *trie.SyncBloom { return nil }
-func (b *testBackend) TxPool() TxPool              { return b.txpool }
+func (b *testBackend) Chain() *core.BlockChain { return b.chain }
+func (b *testBackend) TxPool() TxPool          { return b.txpool }
 
 func (b *testBackend) RunPeer(peer *Peer, handler Handler) error {
 	// Normally the backend would do peer mainentance and handshakes. All that
@@ -127,17 +125,25 @@ func testGetBlockHeaders(t *testing.T, protocol uint) {
 	for i := range unknown {
 		unknown[i] = byte(i)
 	}
+	getHashes := func(from, limit uint64) (hashes []common.Hash) {
+		for i := uint64(0); i < limit; i++ {
+			hashes = append(hashes, backend.chain.GetCanonicalHash(from-1-i))
+		}
+		return hashes
+	}
 	// Create a batch of tests for various scenarios
 	limit := uint64(maxHeadersServe)
 	tests := []struct {
 		query  *GetBlockHeadersPacket // The query to execute for header retrieval
 		expect []common.Hash          // The hashes of the block whose headers are expected
 	}{
-		// A single random block should be retrievable by hash and number too
+		// A single random block should be retrievable by hash
 		{
 			&GetBlockHeadersPacket{Origin: HashOrNumber{Hash: backend.chain.GetBlockByNumber(limit / 2).Hash()}, Amount: 1},
 			[]common.Hash{backend.chain.GetBlockByNumber(limit / 2).Hash()},
-		}, {
+		},
+		// A single random block should be retrievable by number
+		{
 			&GetBlockHeadersPacket{Origin: HashOrNumber{Number: limit / 2}, Amount: 1},
 			[]common.Hash{backend.chain.GetBlockByNumber(limit / 2).Hash()},
 		},
@@ -177,14 +183,19 @@ func testGetBlockHeaders(t *testing.T, protocol uint) {
 		{
 			&GetBlockHeadersPacket{Origin: HashOrNumber{Number: 0}, Amount: 1},
 			[]common.Hash{backend.chain.GetBlockByNumber(0).Hash()},
-		}, {
+		},
+		{
 			&GetBlockHeadersPacket{Origin: HashOrNumber{Number: backend.chain.CurrentBlock().NumberU64()}, Amount: 1},
+			[]common.Hash{backend.chain.CurrentBlock().Hash()},
+		},
+		{ // If the peer requests a bit into the future, we deliver what we have
+			&GetBlockHeadersPacket{Origin: HashOrNumber{Number: backend.chain.CurrentBlock().NumberU64()}, Amount: 10},
 			[]common.Hash{backend.chain.CurrentBlock().Hash()},
 		},
 		// Ensure protocol limits are honored
 		{
 			&GetBlockHeadersPacket{Origin: HashOrNumber{Number: backend.chain.CurrentBlock().NumberU64() - 1}, Amount: limit + 10, Reverse: true},
-			backend.chain.GetBlockHashesFromHash(backend.chain.CurrentBlock().Hash(), limit),
+			getHashes(backend.chain.CurrentBlock().NumberU64(), limit),
 		},
 		// Check that requesting more than available is handled gracefully
 		{
@@ -259,6 +270,7 @@ func testGetBlockHeaders(t *testing.T, protocol uint) {
 			if err := p2p.ExpectMsg(peer.app, BlockHeadersMsg, headers); err != nil {
 				t.Errorf("test %d: headers mismatch: %v", i, err)
 			}
+
 		} else {
 			p2p.Send(peer.app, GetBlockHeadersMsg, GetBlockHeadersPacket66{
 				RequestId:             123,
@@ -290,7 +302,7 @@ func testGetBlockHeaders(t *testing.T, protocol uint) {
 						RequestId:          456,
 						BlockHeadersPacket: headers,
 					}); err != nil {
-						t.Errorf("test %d: headers mismatch: %v", i, err)
+						t.Errorf("test %d by hash: headers mismatch: %v", i, err)
 					}
 				}
 			}
@@ -403,7 +415,7 @@ func testGetNodeData(t *testing.T, protocol uint) {
 	acc2Addr := crypto.PubkeyToAddress(acc2Key.PublicKey)
 
 	signer := types.HomesteadSigner{}
-	// Create a chain generator with some simple transactions (blatantly stolen from @fjl/chain_markets_test)
+	// Create a chain generator with some simple transactions (blatantly stolen from @fjl/chain_makers_test)
 	generator := func(i int, block *core.BlockGen) {
 		switch i {
 		case 0:
@@ -438,9 +450,8 @@ func testGetNodeData(t *testing.T, protocol uint) {
 	peer, _ := newTestPeer("peer", protocol, backend)
 	defer peer.close()
 
-	// Fetch for now the entire chain db
+	// Collect all state tree hashes.
 	var hashes []common.Hash
-
 	it := backend.db.NewIterator(nil, nil)
 	for it.Next() {
 		if key := it.Key(); len(key) == common.HashLength {
@@ -449,6 +460,7 @@ func testGetNodeData(t *testing.T, protocol uint) {
 	}
 	it.Release()
 
+	// Request all hashes.
 	if protocol <= ETH65 {
 		p2p.Send(peer.app, GetNodeDataMsg, hashes)
 	} else {
@@ -476,30 +488,35 @@ func testGetNodeData(t *testing.T, protocol uint) {
 		}
 		data = res.NodeDataPacket
 	}
-	// Verify that all hashes correspond to the requested data, and reconstruct a state tree
+
+	// Verify that all hashes correspond to the requested data.
 	for i, want := range hashes {
 		if hash := crypto.Keccak256Hash(data[i]); hash != want {
 			t.Errorf("data hash mismatch: have %x, want %x", hash, want)
 		}
 	}
-	statedb := rawdb.NewMemoryDatabase()
+
+	// Reconstruct state tree from the received data.
+	reconstructDB := rawdb.NewMemoryDatabase()
 	for i := 0; i < len(data); i++ {
-		statedb.Put(hashes[i].Bytes(), data[i])
+		rawdb.WriteTrieNode(reconstructDB, hashes[i], data[i])
 	}
+
+	// Sanity check whether all state matches.
 	accounts := []common.Address{testAddr, acc1Addr, acc2Addr}
 	for i := uint64(0); i <= backend.chain.CurrentBlock().NumberU64(); i++ {
-		trie, _ := state.New(backend.chain.GetBlockByNumber(i).Root(), state.NewDatabase(statedb), nil)
-
+		root := backend.chain.GetBlockByNumber(i).Root()
+		reconstructed, _ := state.New(root, state.NewDatabase(reconstructDB), nil)
 		for j, acc := range accounts {
-			state, _ := backend.chain.State()
+			state, _ := backend.chain.StateAt(root)
 			bw := state.GetBalance(acc)
-			bh := trie.GetBalance(acc)
+			bh := reconstructed.GetBalance(acc)
 
-			if (bw != nil && bh == nil) || (bw == nil && bh != nil) {
-				t.Errorf("test %d, account %d: balance mismatch: have %v, want %v", i, j, bh, bw)
+			if (bw == nil) != (bh == nil) {
+				t.Errorf("block %d, account %d: balance mismatch: have %v, want %v", i, j, bh, bw)
 			}
-			if bw != nil && bh != nil && bw.Cmp(bw) != 0 {
-				t.Errorf("test %d, account %d: balance mismatch: have %v, want %v", i, j, bh, bw)
+			if bw != nil && bh != nil && bw.Cmp(bh) != 0 {
+				t.Errorf("block %d, account %d: balance mismatch: have %v, want %v", i, j, bh, bw)
 			}
 		}
 	}

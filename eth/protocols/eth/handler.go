@@ -29,7 +29,6 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/enr"
 	"github.com/ethereum/go-ethereum/params"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 const (
@@ -69,9 +68,6 @@ type Backend interface {
 	// Chain retrieves the blockchain object to serve data.
 	Chain() *core.BlockChain
 
-	// StateBloom retrieves the bloom filter - if any - for state trie nodes.
-	StateBloom() *trie.SyncBloom
-
 	// TxPool retrieves the transaction pool object to serve data.
 	TxPool() TxPool
 
@@ -96,7 +92,7 @@ type Backend interface {
 
 // TxPool defines the methods needed by the protocol handler to serve transactions.
 type TxPool interface {
-	// Get retrieves the the transaction from the local txpool with the given hash.
+	// Get retrieves the transaction from the local txpool with the given hash.
 	Get(hash common.Hash) *types.Transaction
 }
 
@@ -186,7 +182,7 @@ var eth65 = map[uint64]msgHandler{
 	NewPooledTransactionHashesMsg: handleNewPooledTransactionHashes,
 	GetPooledTransactionsMsg:      handleGetPooledTransactions,
 	PooledTransactionsMsg:         handlePooledTransactions,
-	// metadium message handlers
+	// metadium message handlers - not eth/66 yet
 	GetPendingTxsMsg:  handleGetPendingTxs,
 	GetStatusExMsg:    handleGetStatusEx,
 	StatusExMsg:       handleStatusEx,
@@ -237,6 +233,7 @@ func handleMessage(backend Backend, peer *Peer) error {
 	if peer.Version() >= ETH66 {
 		handlers = eth66
 	}
+
 	// Track the amount of time it takes to serve the request and run the handler
 	if metrics.Enabled {
 		h := fmt.Sprintf("%s/%s/%d/%#02x", p2p.HandleHistName, ProtocolName, peer.Version(), msg.Code)

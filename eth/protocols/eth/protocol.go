@@ -140,7 +140,7 @@ type GetBlockHeadersPacket struct {
 	Reverse bool         // Query direction (false = rising towards latest, true = falling towards genesis)
 }
 
-// GetBlockHeadersPacket represents a block header query over eth/66
+// GetBlockHeadersPacket66 represents a block header query over eth/66
 type GetBlockHeadersPacket66 struct {
 	RequestId uint64
 	*GetBlockHeadersPacket
@@ -189,6 +189,16 @@ type BlockHeadersPacket []*types.Header
 type BlockHeadersPacket66 struct {
 	RequestId uint64
 	BlockHeadersPacket
+}
+
+// BlockHeadersRLPPacket represents a block header response, to use when we already
+// have the headers rlp encoded.
+type BlockHeadersRLPPacket []rlp.RawValue
+
+// BlockHeadersPacket represents a block header response over eth/66.
+type BlockHeadersRLPPacket66 struct {
+	RequestId uint64
+	BlockHeadersRLPPacket
 }
 
 // NewBlockPacket is the network packet for the block propagation message.

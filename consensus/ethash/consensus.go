@@ -47,6 +47,11 @@ var (
 	maxUncles                     = 2                 // Maximum number of uncles allowed in a single block
 	allowedFutureBlockTimeSeconds = int64(15)         // Max seconds from current time allowed for blocks, before they're considered future blocks
 
+	// calcDifficultyEip4345 is the difficulty adjustment algorithm as specified by EIP 4345.
+	// It offsets the bomb a total of 10.7M blocks.
+	// Specification EIP-4345: https://eips.ethereum.org/EIPS/eip-4345
+	calcDifficultyEip4345 = makeDifficultyCalculator(big.NewInt(10_700_000))
+
 	// calcDifficultyEip3554 is the difficulty adjustment algorithm as specified by EIP 3554.
 	// It offsets the bomb a total of 9.7M blocks.
 	// Specification EIP-3554: https://eips.ethereum.org/EIPS/eip-3554
@@ -278,9 +283,8 @@ func (ethash *Ethash) verifyHeader(chain consensus.ChainHeaderReader, header, pa
 		return fmt.Errorf("invalid difficulty: have %v, want %v", header.Difficulty, expected)
 	}
 	// Verify that the gas limit is <= 2^63-1
-	cap := uint64(0x7fffffffffffffff)
-	if header.GasLimit > cap {
-		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, cap)
+	if header.GasLimit > params.MaxGasLimit {
+		return fmt.Errorf("invalid gasLimit: have %v, max %v", header.GasLimit, params.MaxGasLimit)
 	}
 	// Verify that the gasUsed is <= gasLimit
 	if header.GasUsed > header.GasLimit {
@@ -317,7 +321,7 @@ func (ethash *Ethash) verifyHeader(chain consensus.ChainHeaderReader, header, pa
 		return err
 	}
 	// Metadium: Check if it's generated and signed by a registered node
-	if !metaminer.VerifyBlockSig(header.Number, header.MinerNodeId, header.Root, header.MinerNodeSig) {
+	if !metaminer.IsPoW() && !metaminer.VerifyBlockSig(header.Number, header.MinerNodeId, header.Root, header.MinerNodeSig) {
 		return consensus.ErrUnauthorized
 	}
 	return nil
@@ -340,8 +344,8 @@ func CalcDifficulty(config *params.ChainConfig, time uint64, parent *types.Heade
 
 	next := new(big.Int).Add(parent.Number, big1)
 	switch {
-	case config.IsCatalyst(next):
-		return big.NewInt(1)
+	case config.IsArrowGlacier(next):
+		return calcDifficultyEip4345(time, parent)
 	case config.IsLondon(next):
 		return calcDifficultyEip3554(time, parent)
 	case config.IsMuirGlacier(next):
@@ -609,12 +613,14 @@ func (ethash *Ethash) FinalizeAndAssemble(chain consensus.ChainHeaderReader, hea
 	ethash.Finalize(chain, header, state, txs, uncles)
 
 	// sign header.Root with node's private key
-	nodeId, sig, err := metaminer.SignBlock(header.Root)
-	if err != nil {
-		return nil, err
-	} else {
-		header.MinerNodeId = nodeId
-		header.MinerNodeSig = sig
+	if !metaminer.IsPoW() {
+		nodeId, sig, err := metaminer.SignBlock(header.Root)
+		if err != nil {
+			return nil, err
+		} else {
+			header.MinerNodeId = nodeId
+			header.MinerNodeSig = sig
+		}
 	}
 
 	// Header seems complete, assemble into a block and return
@@ -658,10 +664,6 @@ var (
 // reward. The total reward consists of the static block reward and rewards for
 // included uncles. The coinbase of each uncle block is also rewarded.
 func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header *types.Header, uncles []*types.Header) {
-	// Skip block reward in catalyst mode
-	if config.IsCatalyst(header.Number) {
-		return
-	}
 	// Select the correct block reward based on chain progression
 	blockReward := FrontierBlockReward
 	if config.IsByzantium(header.Number) {
@@ -701,7 +703,9 @@ func accumulateRewards(config *params.ChainConfig, state *state.StateDB, header 
 		} else {
 			// upon error, rewards go to the coinbase
 			reward := new(big.Int)
-			reward.Add(blockReward, header.Fees)
+			if header.Fees != nil {
+				reward.Add(blockReward, header.Fees)
+			}
 			state.AddBalance(header.Coinbase, reward)
 		}
 	}
