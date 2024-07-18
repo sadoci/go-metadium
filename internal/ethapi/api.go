@@ -19,10 +19,12 @@ package ethapi
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/big"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/davecgh/go-spew/spew"
@@ -856,6 +858,129 @@ func (s *BlockChainAPI) GetBlockByHash(ctx context.Context, hash common.Hash, fu
 	block, err := s.b.BlockByHash(ctx, hash)
 	if block != nil {
 		return s.rpcMarshalBlock(ctx, block, true, fullTx)
+	}
+	return nil, err
+}
+
+func (s *BlockChainAPI) rpcMarshalReceipts(ctx context.Context, block *types.Block, receipts types.Receipts, txSenders map[string]common.Address) ([]map[string]interface{}, error) {
+	isLondon := s.b.ChainConfig().IsLondon(new(big.Int).SetUint64(block.NumberU64()))
+	baseFee := new(big.Int).Set(common.Big0)
+	if isLondon {
+		baseFee = block.BaseFee()
+	}
+	fieldsList := make([]map[string]interface{}, len(receipts))
+	txs := block.Transactions()
+
+	for i, receipt := range receipts {
+		from, ok := txSenders[strings.ToLower(receipt.TxHash.Hex())]
+		if !ok {
+			return nil, fmt.Errorf("transaction sender not found")
+		}
+		fields := map[string]interface{}{
+			"blockHash":         receipt.BlockHash,
+			"blockNumber":       hexutil.Uint64(block.NumberU64()),
+			"transactionHash":   receipt.TxHash,
+			"transactionIndex":  hexutil.Uint64(receipt.TransactionIndex),
+			"from":              from,
+			"to":                txs[i].To(),
+			"gasUsed":           hexutil.Uint64(receipt.GasUsed),
+			"cumulativeGasUsed": hexutil.Uint64(receipt.CumulativeGasUsed),
+			"contractAddress":   nil,
+			"logs":              receipt.Logs,
+			"logsBloom":         receipt.Bloom,
+			"type":              hexutil.Uint(txs[i].Type()),
+		}
+
+		// Assign the effective gas price paid
+		if !isLondon {
+			fields["effectiveGasPrice"] = (*hexutil.Big)(txs[i].GasPrice())
+		} else {
+			gasPrice := new(big.Int).Add(baseFee, txs[i].EffectiveGasTipValue(baseFee))
+			fields["effectiveGasPrice"] = (*hexutil.Big)(gasPrice)
+		}
+		// Assign receipt status or post state.
+		if len(receipt.PostState) > 0 {
+			fields["root"] = hexutil.Bytes(receipt.PostState)
+		} else {
+			fields["status"] = hexutil.Uint(receipt.Status)
+		}
+		if receipt.Logs == nil {
+			fields["logs"] = []*types.Log{}
+		}
+		// If the ContractAddress is 20 0x0 bytes, assume it is not a contract creation
+		if receipt.ContractAddress != (common.Address{}) {
+			fields["contractAddress"] = receipt.ContractAddress
+		}
+		fieldsList[i] = fields
+	}
+
+	return fieldsList, nil
+}
+
+// GetBlockExByNumber returns the requested canonical block.
+//   - When blockNr is -1 the chain head is returned.
+//   - When blockNr is -2 the pending chain head is returned.
+//   - When callTrace is true call traces of the transactions are returned.
+func (s *BlockChainAPI) GetBlockExByNumber(ctx context.Context, number rpc.BlockNumber) (map[string]interface{}, error) {
+	block, err := s.b.BlockByNumber(ctx, number)
+	if block != nil && err == nil {
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var response map[string]interface{}
+		var receipts types.Receipts
+		var errTransactions, errReceipts error
+		go func() {
+			defer wg.Done()
+			response, errTransactions = s.rpcMarshalBlock(ctx, block, true, true)
+			if errTransactions == nil && number == rpc.PendingBlockNumber {
+				// Pending blocks need to nil out a few fields
+				for _, field := range []string{"hash", "nonce", "miner"} {
+					response[field] = nil
+				}
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			receipts, errReceipts = s.b.GetReceipts(ctx, block.Hash())
+		}()
+		wg.Wait()
+
+		if errTransactions != nil {
+			return nil, errTransactions
+		} else if errReceipts != nil {
+			return nil, errReceipts
+		}
+
+		// collect transaction senders from response
+		// response["transactions"] is either RPCTransaction or json representation of RPCTransaction
+		txSenders := map[string]common.Address{}
+		if txs, ok := response["transactions"].([]interface{}); ok {
+			for _, tx := range txs {
+				if txi, ok := tx.(*RPCTransaction); ok {
+					txSenders[strings.ToLower(txi.Hash.Hex())] = txi.From
+				} else if txi, ok := tx.(map[string]interface{}); ok {
+					txSenders[strings.ToLower(txi["hash"].(string))] = common.HexToAddress(txi["from"].(string))
+				}
+			}
+		}
+
+		receiptsFields, err := s.rpcMarshalReceipts(ctx, block, receipts, txSenders)
+		if err != nil {
+			return nil, err
+		}
+		response["receipts"] = receiptsFields
+
+		return response, err
+	}
+	return nil, err
+}
+
+// GetBlockExByHash returns the requested block. When callTrace is true call traces of the transactions are returned,
+func (s *BlockChainAPI) GetBlockExByHash(ctx context.Context, hash common.Hash) (map[string]interface{}, error) {
+	block, err := s.b.BlockByHash(ctx, hash)
+	if block != nil {
+		return s.rpcMarshalBlock(ctx, block, true, true)
 	}
 	return nil, err
 }
@@ -2178,4 +2303,40 @@ func checkTxFee(gasPrice *big.Int, gas uint64, cap float64) error {
 		return fmt.Errorf("tx fee (%.2f ether) exceeds the configured cap (%.2f ether)", feeFloat, cap)
 	}
 	return nil
+}
+
+// This assumes transactions' senders are resolved already
+func RPCMarshalBlockEx(chain *core.BlockChain, block *types.Block, receipts types.Receipts, traceData []byte) map[string]interface{} {
+	fields := RPCMarshalHeader(block.Header())
+	fields["size"] = hexutil.Uint64(block.Size())
+	txs := block.Transactions()
+	fieldsTxs := make([]*RPCTransaction, txs.Len())
+	for i, _ := range txs {
+		fieldsTxs[i] = newRPCTransactionFromBlockIndex(block, uint64(i), chain.Config())
+	}
+	fields["transactions"] = fieldsTxs
+
+	fieldsReceipts := make([]interface{}, receipts.Len())
+	signer := types.MakeSigner(chain.Config(), block.Number(), block.Time())
+	for i, receipt := range receipts {
+		receiptFields := marshalReceipt(receipt, block.Hash(), block.NumberU64(), signer, txs[i], i)
+		fieldsReceipts[i] = receiptFields
+	}
+	fields["receipts"] = fieldsReceipts
+
+	uncles := block.Uncles()
+	uncleHashes := make([]common.Hash, len(uncles))
+	for i, uncle := range uncles {
+		uncleHashes[i] = uncle.Hash()
+	}
+	fields["uncles"] = uncleHashes
+
+	// fields["totalDifficulty"] = (*hexutil.Big)(s.b.GetTd(ctx, block.Hash()))
+
+	_, err := json.MarshalIndent(fields, "", "  ")
+	if err != nil {
+		log.Error("json marshal failed", "error", err)
+	}
+
+	return fields
 }

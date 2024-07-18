@@ -260,6 +260,10 @@ type BlockChain struct {
 	logger     *tracing.Hooks
 }
 
+var BlockTraceSetup func(*vm.Config)
+var BlockTraceGetResult func(*vm.Config) ([]byte, error)
+var BlockImportHook func(*BlockChain, *types.Block, types.Receipts, []byte) map[string]interface{}
+
 // NewBlockChain returns a fully initialised block chain using information
 // available in the database. It initialises the default Ethereum Validator
 // and Processor.
@@ -1915,8 +1919,21 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	}
 
 	// Process block using the parent state as reference point
+	traceVmConfig := bc.vmConfig
+	var traceData []byte
+	if BlockTraceSetup != nil {
+		BlockTraceSetup(&traceVmConfig)
+	}
 	pstart := time.Now()
-	receipts, logs, usedGas, err := bc.processor.Process(block, statedb, bc.vmConfig)
+	receipts, logs, usedGas, err := bc.processor.Process(block, statedb, traceVmConfig)
+	if traceVmConfig.Tracer != nil {
+		data, err := BlockTraceGetResult(&traceVmConfig)
+		if err != nil {
+			log.Error("Explorer block trace", "block", block.Number(), "error", err)
+		} else {
+			traceData = data
+		}
+	}
 	if err != nil {
 		bc.reportBlock(block, receipts, err)
 		return nil, err
@@ -1959,6 +1976,9 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	}
 	if err != nil {
 		return nil, err
+	}
+	if BlockImportHook != nil {
+		_ = BlockImportHook(bc, block, receipts, traceData)
 	}
 	// Update the metrics touched during block commit
 	accountCommitTimer.Update(statedb.AccountCommits)   // Account commits are complete, we can mark them

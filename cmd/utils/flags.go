@@ -58,6 +58,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethstats"
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
+	"github.com/ethereum/go-ethereum/internal/explorer"
 	"github.com/ethereum/go-ethereum/internal/flags"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -953,6 +954,12 @@ Please note that --` + MetricsHTTPFlag.Name + ` must be set to start the server.
 		Usage:    "InfluxDB organization name (v2 only)",
 		Value:    metrics.DefaultConfig.InfluxDBOrganization,
 		Category: flags.MetricsCategory,
+	}
+
+	ExplorerDBParams = &cli.StringFlag{
+		Name:     "explorer.dbparams",
+		Usage:    "Explorer DB Parameters",
+		Category: flags.MiscCategory,
 	}
 )
 
@@ -1912,6 +1919,14 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 			cfg.VMTrace = name
 			cfg.VMTraceJsonConfig = config
 		}
+	}
+}
+
+// SetExplorerConfig applies explorer related command line flags to the config.
+func SetExplorerConfig(ctx *cli.Context) {
+	if ctx.IsSet(ExplorerDBParams.Name) {
+		params.ExplorerDBParams = ctx.String(ExplorerDBParams.Name)
+		explorer.SetupExplorerDB(params.ExplorerDBParams)
 	}
 }
 

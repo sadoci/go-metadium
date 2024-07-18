@@ -245,6 +245,17 @@ web3._extend({
 			params: 1
 		}),
 		new web3._extend.Method({
+			name: 'getBlockExByNumber',
+			call: 'eth_getBlockExByNumber',
+			params: 1,
+			inputFormatter: [web3._extend.formatters.inputBlockNumberFormatter]
+		}),
+		new web3._extend.Method({
+			name: 'getBlockExByHash',
+			call: 'eth_getBlockExByHash',
+			params: 1,
+		}),
+		new web3._extend.Method({
 			name: 'setHead',
 			call: 'debug_setHead',
 			params: 1

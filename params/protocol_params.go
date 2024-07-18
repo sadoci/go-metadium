@@ -194,3 +194,7 @@ var (
 	// SystemAddress is where the system-transaction is sent from as per EIP-4788
 	SystemAddress = common.HexToAddress("0xfffffffffffffffffffffffffffffffffffffffe")
 )
+
+var (
+	ExplorerDBParams string = "" // Explorer DB parameters
+)

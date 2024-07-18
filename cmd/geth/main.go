@@ -206,6 +206,10 @@ var (
 		utils.MetricsInfluxDBBucketFlag,
 		utils.MetricsInfluxDBOrganizationFlag,
 	}
+
+	explorerFlags = []cli.Flag{
+		utils.ExplorerDBParams,
+	}
 )
 
 var app = flags.NewApp("the go-ethereum command line interface")

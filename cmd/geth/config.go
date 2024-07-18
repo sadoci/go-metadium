@@ -237,6 +237,7 @@ func makeFullNode(ctx *cli.Context) *node.Node {
 			utils.Fatalf("failed to register catalyst service: %v", err)
 		}
 	}
+	utils.SetExplorerConfig(ctx)
 	return stack
 }
 
