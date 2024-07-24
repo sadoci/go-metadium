@@ -261,6 +261,7 @@ func init() {
 		consoleFlags,
 		debug.Flags,
 		metricsFlags,
+		explorerFlags,
 	)
 	flags.AutoEnvVars(app.Flags, "GETH")
 

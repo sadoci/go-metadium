@@ -30,11 +30,12 @@ func blockImportHook(bc *core.BlockChain, block *types.Block, receipts types.Rec
 		log.Error("Failed to marshal block data", "number", block.Number(), "hash", block.Hash(), "err", err)
 		return nil
 	}
+	// TODO: ? -> $X
 	if len(traceData) != 0 {
-		_, err = explorerDb.Exec("INSERT INTO block_data (number, hash, block_data, trace_data) VALUES ($1, $2, $3, $4)",
+		_, err = explorerDb.Exec("INSERT INTO block_data (number, hash, block_data, trace_data) VALUES (?, ?, ?, ?)",
 			block.Number().Int64(), block.Hash().Hex(), string(jsonData), string(traceData))
 	} else {
-		_, err = explorerDb.Exec("INSERT INTO block_data (number, hash, block_data) VALUES ($1, $2, $3, $4)",
+		_, err = explorerDb.Exec("INSERT INTO block_data (number, hash, block_data) VALUES (?, ?, ?)",
 			block.Number().Int64(), block.Hash().Hex(), string(jsonData))
 	}
 	if err != nil {

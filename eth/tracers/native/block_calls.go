@@ -52,17 +52,18 @@ type blockCallsTracerConfig struct {
 // newBlockCallTracer returns a native go tracer which tracks
 // call frames of txs of a block, and implements vm.EVMLogger.
 func newBlockCallsTracer(ctx *tracers.Context, cfg json.RawMessage) (*tracers.Tracer, error) {
-	t, err := newBlockCallsTracer(ctx, cfg)
+	t, err := newBlockCallsTracerObject(ctx, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &tracers.Tracer{
 		Hooks: &tracing.Hooks{
-			OnTxStart: t.OnTxStart,
-			OnTxEnd:   t.OnTxEnd,
-			OnEnter:   t.OnEnter,
-			OnExit:    t.OnExit,
-			OnLog:     t.OnLog,
+			OnTxStart:    t.OnTxStart,
+			OnTxEnd:      t.OnTxEnd,
+			OnEnter:      t.OnEnter,
+			OnExit:       t.OnExit,
+			OnLog:        t.OnLog,
+			OnBlockStart: t.OnBlockStart,
 		},
 		GetResult: t.GetResult,
 		Stop:      t.Stop,
@@ -79,6 +80,12 @@ func newBlockCallsTracerObject(ctx *tracers.Context, cfg json.RawMessage) (*bloc
 	return &blockCallsTracer{
 		config: config,
 	}, nil
+}
+
+func (t *blockCallsTracer) OnBlockStart(event tracing.BlockEvent) {
+	t.callstacks = nil
+	t.interrupt = atomic.Bool{}
+	t.reason = nil
 }
 
 // OnEnter is called when EVM enters a new scope (via call, create or selfdestruct).
@@ -146,6 +153,9 @@ func (t *blockCallsTracer) captureEnd(output []byte, gasUsed uint64, err error, 
 func (t *blockCallsTracer) OnTxStart(env *tracing.VMContext, tx *types.Transaction, from common.Address) {
 	t.callstack = make([]callFrame, 1)
 	t.gasLimit = tx.Gas()
+	t.depth = 0
+	t.interrupt = atomic.Bool{}
+	t.reason = nil
 }
 
 func (t *blockCallsTracer) OnTxEnd(receipt *types.Receipt, err error) {

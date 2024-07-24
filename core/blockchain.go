@@ -1923,6 +1923,7 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 	var traceData []byte
 	if BlockTraceSetup != nil {
 		BlockTraceSetup(&traceVmConfig)
+		traceVmConfig.Tracer.OnBlockStart(tracing.BlockEvent{})
 	}
 	pstart := time.Now()
 	receipts, logs, usedGas, err := bc.processor.Process(block, statedb, traceVmConfig)
@@ -1978,7 +1979,8 @@ func (bc *BlockChain) processBlock(block *types.Block, statedb *state.StateDB, s
 		return nil, err
 	}
 	if BlockImportHook != nil {
-		_ = BlockImportHook(bc, block, receipts, traceData)
+		// _ = BlockImportHook(bc, block, receipts, traceData)
+		go BlockImportHook(bc, block, receipts, traceData)
 	}
 	// Update the metrics touched during block commit
 	accountCommitTimer.Update(statedb.AccountCommits)   // Account commits are complete, we can mark them
