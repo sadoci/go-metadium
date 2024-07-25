@@ -44,7 +44,7 @@ type callFrame0 struct {
 
 func navigateCallFrame(block *types.Block, tx_index int, call_index *int, frame callFrame0) {
 	emptyAddress := common.Address{}
-	if frame.TypeString != "Call" || frame.From == emptyAddress || frame.To == nil || frame.Value.ToInt().Cmp(common.Big0) == 0 {
+	if frame.TypeString != "CALL" || frame.From == emptyAddress || frame.To == nil || frame.Value.ToInt().Cmp(common.Big0) == 0 {
 		return
 	}
 	_, err := explorerDb.Exec("INSERT INTO internal_transactions (tx_hash, block_number, block_hash, tx_index, call_index, `from`, `to`, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
